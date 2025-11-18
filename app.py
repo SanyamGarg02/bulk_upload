@@ -6,14 +6,11 @@ import io
 # ========== HELPER FUNCTIONS ==========
 
 def clean_metal(value):
-    """Normalize metal description like '18K White & Yellow Gold' → 'Two tone gold'"""
     if pd.isna(value):
         return ""
     value = str(value)
-    # Detect Two tone
     if "white" in value.lower() and "yellow" in value.lower():
         return "Two tone gold"
-    # Remove karat mentions
     value = re.sub(r"\b(18K|14K|22K)\b", "", value, flags=re.IGNORECASE)
     value = value.replace("&", "and").strip()
     value = re.sub(r"\s+", " ", value)
@@ -44,52 +41,56 @@ CATEGORY_MAP = {
 }
 DEFAULT_CATEGORY = "Others"
 
+
 def detect_category(detail):
-    """Detect category more accurately"""
     if pd.isna(detail):
         return DEFAULT_CATEGORY
     d = str(detail).strip().lower()
 
-    # ✅ Ensure earrings are not misclassified as rings
     if "earring" in d:
         return "Earring"
+
     for k, v in CATEGORY_MAP.items():
         if k in d:
             return v
+
     return DEFAULT_CATEGORY
 
 
+# -------- CHANGE #1 IMPLEMENTED HERE --------
 def parse_size(size_val, category):
-    """Parses size strings including inches and returns length, width, unit, and standard size for rings"""
+    """Returns (size_length, size_width, size_unit, standard_size)"""
+
     if pd.isna(size_val):
         return "", "", "", ""
 
     size_str = str(size_val).strip().lower().replace(" ", "")
 
-    # ✅ Handle inches like 16" or 16.5"
+    # RING → ALWAYS map only to standard-size
+    if category == "Ring":
+        if re.match(r"^\d+(\.\d+)?$", size_str):
+            return "", "", "", size_str
+        # even if it's 18CM, 5.5*4.5 → IGNORE, map nothing except standard-size
+        return "", "", "", size_str
+
+    # Non-rings continue normal logic
     match_inch = re.match(r"^(\d+\.?\d*)\"?$", size_str)
     if match_inch:
         length = match_inch.group(1)
-        return length, "", "cm", ""  # store inches as cm
+        return length, "", "cm", ""
 
-    # ✅ Handle numeric ring size for category Ring
-    if category == "Ring" and re.match(r"^\d+(\.\d+)?$", size_str):
-        return "", "", "", size_str
-
-    # ✅ Handle double dimension like 6CM*4, 5.5*4.5
     match_double = re.match(r"^(\d+\.?\d*)[*xX](\d+\.?\d*)(cm|mm)?$", size_str)
     if match_double:
-        length = match_double.group(1)
-        width = match_double.group(2)
-        unit = match_double.group(3) if match_double.group(3) else ""
-        return length, width, unit, ""
+        l = match_double.group(1)
+        w = match_double.group(2)
+        u = match_double.group(3) if match_double.group(3) else ""
+        return l, w, u, ""
 
-    # ✅ Handle single value like 18CM or 5.5MM
     match_single = re.match(r"^(\d+\.?\d*)(cm|mm)?$", size_str)
     if match_single:
-        length = match_single.group(1)
-        unit = match_single.group(2) if match_single.group(2) else ""
-        return length, "", unit, ""
+        l = match_single.group(1)
+        u = match_single.group(2) if match_single.group(2) else ""
+        return l, "", u, ""
 
     return "", "", "", ""
 
@@ -131,19 +132,25 @@ def process_vendor_file(uploaded_file):
     missing_diamond_rows = []
 
     for idx, row in df.iterrows():
+
         uid = idx + 1
         sku = row.get("TAG NO", "").strip()
         price = row.get("gem gem sale price", "").strip()
         currency = "USD"
         metal = clean_metal(row.get("METAL", ""))
         gold_purity = format_gold_purity(row.get("METAL CARAT", ""))
+
         category = detect_category(row.get("DETAILS", ""))
         stone_type_raw = row.get("STONE TYPE", "")
         stone_type = normalize_stone_type(stone_type_raw)
-        size_length, size_width, size_unit, standard_size = parse_size(row.get("SIZE", ""), category)
+
+        size_length, size_width, size_unit, standard_size = parse_size(
+            row.get("SIZE", ""),
+            category
+        )
+
         total_weight = row.get("METAL WT.", "").strip()
 
-        # ✅ Condition mapping
         stock_type2 = row.get("STOCK TYPE2", "").strip().lower()
         if stock_type2 == "second hand":
             condition = "Excellent"
@@ -152,7 +159,6 @@ def process_vendor_file(uploaded_file):
         else:
             condition = "Excellent"
 
-        # ✅ Label assignment
         label = "Fast Shipping, Verified Partner"
         if condition == "Brand New":
             label += ", New"
@@ -176,17 +182,34 @@ def process_vendor_file(uploaded_file):
             "diamond_quantity": row.get("SD PCS", "").strip(),
         }
 
-        # ========== DIAMOND MAPPING ==========
+        # ---------- CHANGE #2 COLLECTION MAPPING ----------
+        collection_value = row.get("COLLECTION", "").strip()
+        if collection_value:
+            if category == "Ring":
+                record["ring-style"] = collection_value
+            elif category == "Bracelet":
+                record["bracelet-style"] = collection_value
+            elif category == "Necklace":
+                record["necklace-style"] = collection_value
+            elif category == "Pendant":
+                record["pendant-style"] = collection_value
+            elif category == "Earring":
+                record["earring-style"] = collection_value
+            elif category == "Brooch":
+                record["brooch-style"] = collection_value
+            elif category == "Accessories":
+                record["accessories-style"] = collection_value
+
+        # ========== DIAMOND LOGIC ==========
         if "diamond" in stone_type_raw.lower():
             clr = row.get("CLR", "").strip()
             ct_raw = row.get("CT", "").strip()
             sd_wt_raw = row.get("SD WT.", "").strip()
 
-            # numeric zero check
             def is_positive_number(s):
                 try:
                     return float(s) > 0
-                except Exception:
+                except:
                     return False
 
             if is_positive_number(ct_raw):
@@ -225,7 +248,7 @@ def process_vendor_file(uploaded_file):
                 "gemstone_stone-type": "Diamond",
             })
 
-        # ========== GEMSTONE MAPPING ==========
+        # ========== GEMSTONE LOGIC ==========
         else:
             record["diamond_carat-weight"] = row.get("SD WT.", "").strip()
             record["diamond_center-stone"] = "Side stone"
@@ -242,9 +265,6 @@ def process_vendor_file(uploaded_file):
             if stone_type == "Pearl":
                 record["gemstone_pearl-shape"] = row.get("SHAPE", "").strip()
                 record["gemstone_pearl-color"] = row.get("CLR", "").strip()
-
-            record["gemstone_stone-shape"] = row.get("SHAPE", "").strip()
-            record["gemstone_stone-color"] = row.get("CLR", "").strip()
 
             treatment_val = row.get("TREATMENT", "").strip()
             if treatment_val:
@@ -281,6 +301,8 @@ def process_vendor_file(uploaded_file):
                     record[origin_map[stone_type]] = origin_val
 
         out_df = pd.concat([out_df, pd.DataFrame([record])], ignore_index=True)
+
+    # ------------ CHANGE #3 EXACT REQUIRED ORDER ------------
     REQUIRED_COLUMNS = [
         "uid","sku","name","category","description","images","certificate_images","ruler_images",
         "currency","price","discounted_price","to_be_listed","have_master_piece","year-of-purchase",
@@ -315,10 +337,12 @@ def process_vendor_file(uploaded_file):
         "gemstone_pearl-origin"
     ]
 
-    # Add any missing required columns as empty strings
     for col in REQUIRED_COLUMNS:
         if col not in out_df.columns:
             out_df[col] = ""
+
+    out_df = out_df[REQUIRED_COLUMNS]
+
     return out_df, missing_diamond_rows
 
 
