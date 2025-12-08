@@ -135,7 +135,7 @@ def process_vendor_file(uploaded_file):
 
         uid = idx + 1
         sku = row.get("TAG NO", "").strip()
-        price = row.get("gem gem sale price", "").strip()
+        price = row.get("TAG PRICE", "").strip()
         currency = "USD"
         metal = clean_metal(row.get("METAL", ""))
         gold_purity = format_gold_purity(row.get("METAL CARAT", ""))
